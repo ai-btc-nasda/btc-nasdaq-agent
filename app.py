@@ -2,6 +2,7 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
 
 st.title("BTC & Nasdaq 100 Swing Trading Agent")
 
@@ -13,10 +14,10 @@ tickers = {
 selected = st.selectbox("Izaberi Asset:", list(tickers.keys()))
 ticker = tickers[selected]
 
-# Učitavanje podataka
 try:
     data = yf.download(ticker, period="90d", interval="1d")
 
+    # Ako multi-index, pojednostavi kolone
     if isinstance(data.columns, pd.MultiIndex):
         data.columns = data.columns.get_level_values(0)
 
@@ -24,7 +25,7 @@ try:
         # SMA20
         data['SMA20'] = data['Close'].rolling(window=20).mean()
 
-        # RSI
+        # RSI calculation
         delta = data['Close'].diff()
         gain = delta.where(delta > 0, 0)
         loss = -delta.where(delta < 0, 0)
@@ -33,30 +34,19 @@ try:
         rs = avg_gain / avg_loss
         data['RSI'] = 100 - (100 / (1 + rs))
 
-        # MACD
-        exp1 = data['Close'].ewm(span=12, adjust=False).mean()
-        exp2 = data['Close'].ewm(span=26, adjust=False).mean()
-        data['MACD'] = exp1 - exp2
-        data['Signal Line'] = data['MACD'].ewm(span=9, adjust=False).mean()
+        # Buy/Sell/Hold signal na osnovu RSI
+        data['Signal'] = np.where(data['RSI'] < 30, 'Buy',
+                          np.where(data['RSI'] > 70, 'Sell', 'Hold'))
 
-        # Bollinger Bands
-        sma = data['Close'].rolling(window=20).mean()
-        std = data['Close'].rolling(window=20).std()
-        data['Upper Band'] = sma + (std * 2)
-        data['Lower Band'] = sma - (std * 2)
+        # Prikaži grafik Close, SMA20
+        st.line_chart(data[['Close', 'SMA20']])
 
-        # Grafovi
-        st.subheader("Cene + SMA20 + Bollinger Bands")
-        st.line_chart(data[['Close', 'SMA20', 'Upper Band', 'Lower Band']])
+        # Prikaži RSI
+        st.line_chart(data['RSI'])
 
-        st.subheader("RSI")
-        st.line_chart(data[['RSI']])
-
-        st.subheader("MACD")
-        st.line_chart(data[['MACD', 'Signal Line']])
-
+        # Prikaz signala za poslednji dan
+        st.write(f"Signal za poslednji dan ({data.index[-1].date()}): **{data['Signal'].iloc[-1]}**")
     else:
         st.error("⚠️ Podaci nisu dostupni za izabrani asset. Pokušaj ponovo kasnije.")
-
 except Exception as e:
     st.error(f"❌ Greška pri učitavanju podataka: {e}")
