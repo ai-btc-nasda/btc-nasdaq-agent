@@ -15,8 +15,14 @@ selected = st.selectbox("Izaberi Asset:", list(tickers.keys()))
 ticker = tickers[selected]
 
 # Učitavanje podataka
+
+# Učitavanje podataka
 try:
     data = yf.download(ticker, period="90d", interval="1d")
+
+    # Ako multi-index, pojednostavi kolone
+    if isinstance(data.columns, pd.MultiIndex):
+        data.columns = data.columns.get_level_values(0)
 
     if not data.empty and 'Close' in data.columns:
         data['SMA20'] = data['Close'].rolling(window=20).mean()
