@@ -1,8 +1,13 @@
 
+    
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense
+import matplotlib.pyplot as plt
 
 st.title("BTC & Nasdaq 100 Swing Trading Agent")
 
@@ -14,15 +19,16 @@ tickers = {
 selected = st.selectbox("Izaberi Asset:", list(tickers.keys()))
 ticker = tickers[selected]
 
+# Učitavanje podataka
 try:
-    data = yf.download(ticker, period="90d", interval="1d")
+    data = yf.download(ticker, period="180d", interval="1d")
 
-    # Ako multi-index, pojednostavi kolone
+    # Pojednostavi kolone ako multiindex
     if isinstance(data.columns, pd.MultiIndex):
         data.columns = data.columns.get_level_values(0)
 
     if not data.empty and 'Close' in data.columns:
-        # SMA 20
+        # --- TEHNIČKI INDIKATORI ---
         data['SMA20'] = data['Close'].rolling(window=20).mean()
 
         # RSI
@@ -35,88 +41,72 @@ try:
         data['RSI'] = 100 - (100 / (1 + rs))
 
         # MACD
-        exp1 = data['Close'].ewm(span=12, adjust=False).mean()
-        exp2 = data['Close'].ewm(span=26, adjust=False).mean()
-        data['MACD'] = exp1 - exp2
-        data['Signal_Line'] = data['MACD'].ewm(span=9, adjust=False).mean()
-        data['MACD_Signal'] = np.where(data['MACD'] > data['Signal_Line'], 'Buy', 'Sell')
+        ema12 = data['Close'].ewm(span=12, adjust=False).mean()
+        ema26 = data['Close'].ewm(span=26, adjust=False).mean()
+        data['MACD'] = ema12 - ema26
+        data['MACD_signal'] = data['MACD'].ewm(span=9, adjust=False).mean()
 
         # Bollinger Bands
-        data['BB_Middle'] = data['Close'].rolling(window=20).mean()
-        data['BB_Std'] = data['Close'].rolling(window=20).std()
-        data['BB_Upper'] = data['BB_Middle'] + 2 * data['BB_Std']
-        data['BB_Lower'] = data['BB_Middle'] - 2 * data['BB_Std']
+        data['BB_MA20'] = data['Close'].rolling(window=20).mean()
+        data['BB_std'] = data['Close'].rolling(window=20).std()
+        data['BB_upper'] = data['BB_MA20'] + 2 * data['BB_std']
+        data['BB_lower'] = data['BB_MA20'] - 2 * data['BB_std']
 
-        # Prikaz grafikona
-        st.subheader("Cene i SMA20")
+        st.subheader("Tehnički indikatori")
         st.line_chart(data[['Close', 'SMA20']])
-
-        st.subheader("RSI")
-        st.line_chart(data['RSI'])
-
-        st.subheader("MACD i Signal linija")
-        st.line_chart(data[['MACD', 'Signal_Line']])
-
-        st.subheader("Bollinger Bands")
-        st.line_chart(data[['Close', 'BB_Upper', 'BB_Lower']])
-
-        # Alert na osnovu MACD signala
-        last_macd_signal = data['MACD_Signal'].iloc[-1]
-        if last_macd_signal == 'Buy':
-            st.success("🚀 MACD signal za kupovinu!")
-        elif last_macd_signal == 'Sell':
-            st.warning("⚠️ MACD signal za prodaju!")
+        st.line_chart(data[['RSI']])
+        st.line_chart(data[['MACD', 'MACD_signal']])
+        st.line_chart(data[['BB_upper', 'Close', 'BB_lower']])
 
     else:
         st.error("⚠️ Podaci nisu dostupni za izabrani asset. Pokušaj ponovo kasnije.")
-
 except Exception as e:
-    st.error(f"❌ Greška pri učitavanju podataka: {e}")import numpy as np
-from sklearn.preprocessing import MinMaxScaler
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense
+    st.error(f"❌ Greška pri učitavanju podataka: {e}")
 
-def prepare_lstm_data(data, window=60):
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_data = scaler.fit_transform(data['Close'].values.reshape(-1,1))
-    
+# --- LSTM MODEL ---
+
+def create_dataset(dataset, look_back=60):
     X, y = [], []
-    for i in range(window, len(scaled_data)):
-        X.append(scaled_data[i-window:i, 0])
-        y.append(scaled_data[i, 0])
-    X, y = np.array(X), np.array(y)
-    X = np.reshape(X, (X.shape[0], X.shape[1], 1))
-    return X, y, scaler
+    for i in range(len(dataset) - look_back):
+        X.append(dataset[i:(i + look_back), 0])
+        y.append(dataset[i + look_back, 0])
+    return np.array(X), np.array(y)
 
 def build_lstm_model(input_shape):
     model = Sequential()
-    model.add(LSTM(units=50, return_sequences=True, input_shape=input_shape))
-    model.add(LSTM(units=50))
+    model.add(LSTM(50, return_sequences=True, input_shape=input_shape))
+    model.add(LSTM(50))
     model.add(Dense(1))
     model.compile(optimizer='adam', loss='mean_squared_error')
     return model
 
-def train_lstm_model(data):
-    X, y, scaler = prepare_lstm_data(data)
+def train_lstm_model(data_close):
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    data_scaled = scaler.fit_transform(data_close.values.reshape(-1, 1))
+
+    look_back = 60
+    X, y = create_dataset(data_scaled, look_back)
+
+    X = X.reshape(X.shape[0], X.shape[1], 1)
+
     model = build_lstm_model((X.shape[1], 1))
-    model.fit(X, y, epochs=5, batch_size=32, verbose=1)
-    return model, scaler
+    model.fit(X, y, epochs=10, batch_size=16, verbose=0)
 
-def predict_next_day(model, scaler, data, window=60):
-    last_60_days = data['Close'][-window:].values.reshape(-1,1)
-    scaled_last_60 = scaler.transform(last_60_days)
-    X_test = np.array([scaled_last_60[:,0]])
-    X_test = np.reshape(X_test, (X_test.shape[0], X_test.shape[1], 1))
-    pred_scaled = model.predict(X_test)
-    pred = scaler.inverse_transform(pred_scaled)
-    return pred[0][0]
+    return model, scaler, look_back
 
-# U Streamlit appu možeš napraviti dugme za treniranje i prikaz predikcije:
+def predict_next_price(model, scaler, data_close, look_back):
+    last_60 = data_close[-look_back:].values.reshape(-1, 1)
+    last_60_scaled = scaler.transform(last_60)
+    input_data = last_60_scaled.reshape(1, look_back, 1)
+    pred_scaled = model.predict(input_data)
+    pred_price = scaler.inverse_transform(pred_scaled)
+    return pred_price[0][0]
 
-if st.button("Train LSTM model and predict next day price"):
-    with st.spinner("Training LSTM model..."):
-        model, scaler = train_lstm_model(data)
-        pred_price = predict_next_day(model, scaler, data)
-        st.write(f"Predviđena cena za sledeći dan: ${pred_price:.2f}")
-
-    
+if st.button("Treniraj LSTM i predvidi sledeću cenu"):
+    if not data.empty and 'Close' in data.columns:
+        with st.spinner("Trening LSTM modela..."):
+            model, scaler, look_back = train_lstm_model(data['Close'])
+            prediction = predict_next_price(model, scaler, data['Close'], look_back)
+            st.success(f"Predviđena cena za sledeći dan: {prediction:.2f} USD")
+    else:
+        st.error("Nema dovoljno podataka za treniranje LSTM modela.")
